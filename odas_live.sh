@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# odas_start.sh - clean (re)start of ODAS live: kill old, free the card, server, core, check /sst.
-# Usage: bash odas_start.sh [cfg=~/Downloads/uma16.cfg]
-# Stop everything later with:  bash odas_start.sh stop
+# odas_live.sh - clean (re)start of ODAS live for any array (UMA-16, UMA-8): kill old, free the card, server, core, check /sst.
+# Usage: bash odas_live.sh [cfg=~/Downloads/uma16.cfg]
+# Stop everything later with:  bash odas_live.sh stop
 CFG=${1:-$HOME/Downloads/uma16.cfg}
 LOG=~/dataset/odas_logs; mkdir -p "$LOG"
 source ~/ros2_ws/install/setup.bash   # must be sourced without 'set -u' (colcon uses unset vars)
@@ -23,8 +23,16 @@ if [ "$CFG" = "stop" ]; then stop_all; echo "ODAS stopped."; exit 0; fi
 echo "[1/5] stopping old ODAS processes"
 stop_all
 
-echo "[2/5] checking the UMA-16"
-CARD=$(grep -oP 'card\s*=\s*\K[0-9]+' "$CFG" | head -1); CARD=${CARD:-2}
+echo "[2/5] checking the microphone array"
+# card number: "card = N", or devicename "hw:N,0" / "plughw:N,0" / "plughw:CARD=NAME,DEV=0"
+CARD=$(grep -oP '^\s*card\s*=\s*\K[0-9]+' "$CFG" | head -1)
+[ -z "$CARD" ] && CARD=$(grep -oP 'devicename\s*=\s*"(plug)?hw:\K[0-9]+' "$CFG" | head -1)
+if [ -z "$CARD" ]; then
+  NAME=$(grep -oP 'devicename\s*=\s*"(plug)?hw:CARD=\K[^,"]+' "$CFG" | head -1)
+  [ -n "$NAME" ] && CARD=$(readlink /proc/asound/"$NAME" 2>/dev/null | grep -oP 'card\K[0-9]+')
+fi
+CARD=${CARD:-2}
+echo "  cfg uses card $CARD: $(arecord -l | grep "card $CARD:" | cut -d: -f2 | xargs)"
 if ! arecord -l | grep -q "card $CARD:"; then
   echo "  [FAIL] card $CARD not found. Current cards:"; arecord -l; exit 1
 fi
@@ -57,7 +65,7 @@ if timeout 6 ros2 topic echo /sst --once >/dev/null 2>&1; then
   echo "  [OK] /sst is publishing. ODAS is live."
   echo
   echo "Next:  cd ~/Downloads && python3 target_view_node.py --ros-args -p known_az:=21.2 -p known_el:=-8.3 -p vertical:=true -p min_activity:=0.05"
-  echo "Logs:  tail -f $LOG/core.log   |   stop: bash odas_start.sh stop"
+  echo "Logs:  tail -f $LOG/core.log   |   stop: bash odas_live.sh stop"
 else
   echo "  [FAIL] no /sst message. Core log:"; tail -15 "$LOG/core.log"; exit 1
 fi
