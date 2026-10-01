@@ -33,6 +33,10 @@ if [ -z "$CARD" ]; then
 fi
 CARD=${CARD:-2}
 echo "  cfg uses card $CARD: $(arecord -l | grep "card $CARD:" | cut -d: -f2 | xargs)"
+if arecord -l | grep "card $CARD:" | grep -qiE "HDA Intel|PCH|ALC[0-9]"; then
+  echo "  [FAIL] card $CARD is the laptop's built-in mic, not a mic array. Fix 'devicename' / 'card' in $CFG:"
+  arecord -l | grep "^card"; exit 1
+fi
 if ! arecord -l | grep -q "card $CARD:"; then
   echo "  [FAIL] card $CARD not found. Current cards:"; arecord -l; exit 1
 fi
@@ -45,11 +49,16 @@ echo "  card $CARD free"
 
 echo "[3/5] starting server (log: $LOG/server.log)"
 nohup ros2 launch odas_ros odas.launch.xml configuration_path:="$CFG" > "$LOG/server.log" 2>&1 &
-for i in $(seq 1 20); do
-  [ "$(ss -ltn | grep -cE ':900[0-2] ')" -ge 3 ] && break; sleep 0.5
-done
-[ "$(ss -ltn | grep -cE ':900[0-2] ')" -ge 3 ] || { echo "  [FAIL] server not listening on 9000-9002"; tail -20 "$LOG/server.log"; exit 1; }
-echo "  server listening on 9000-9002"
+# ports = the socket sinks declared in this cfg (UMA-16 cfg: 9000-9002, a UMA-8 cfg may have fewer)
+PORTS=$(grep -oP '^\s*port\s*=\s*\K[0-9]+' "$CFG" | sort -u | xargs)
+[ -z "$PORTS" ] && PORTS="9000 9001"
+listening() { local n=0; for p in $PORTS; do ss -ltn | grep -q ":$p " && n=$((n+1)); done; echo $n; }
+NP=$(echo $PORTS | wc -w)
+for i in $(seq 1 30); do [ "$(listening)" -ge "$NP" ] && break; sleep 0.5; done
+if [ "$(listening)" -lt "$NP" ]; then
+  echo "  [FAIL] server not listening on all cfg ports ($PORTS)"; ss -ltn | grep -E ':90[0-9]{2} '; tail -20 "$LOG/server.log"; exit 1
+fi
+echo "  server listening on $PORTS"
 sleep 2
 
 echo "[4/5] starting core (log: $LOG/core.log)"
@@ -64,7 +73,13 @@ echo "[5/5] checking /sst"
 if timeout 6 ros2 topic echo /sst --once >/dev/null 2>&1; then
   echo "  [OK] /sst is publishing. ODAS is live."
   echo
-  echo "Next:  cd ~/Downloads && python3 target_view_node.py --ros-args -p known_az:=21.2 -p known_el:=-8.3 -p vertical:=true -p min_activity:=0.05"
+  if echo "$CFG" | grep -qi uma8; then
+    echo "Next:  python3 ~/Downloads/uma8_known_track_drop_node.py --ros-args -p calib_seconds:=10.0 -p min_activity:=0.05"
+    echo "       rviz2 -d ~/Downloads/uma8_view.rviz"
+  else
+    echo "Next:  python3 ~/Downloads/known_track_drop_node.py --ros-args -p known_az:=21.2 -p known_el:=-8.3 -p vertical:=true -p min_activity:=0.05 -p label_mode:=id"
+    echo "       rviz2 -d ~/Downloads/target_view.rviz"
+  fi
   echo "Logs:  tail -f $LOG/core.log   |   stop: bash odas_live.sh stop"
 else
   echo "  [FAIL] no /sst message. Core log:"; tail -15 "$LOG/core.log"; exit 1
