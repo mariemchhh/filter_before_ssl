@@ -18,7 +18,7 @@ raw: {
 
     interface: {
         type = "soundcard_name";
-        devicename = "plughw:CARD=SPK,DEV=0";
+        devicename = "plughw:1,0";
     };
 }
 
